@@ -1,6 +1,5 @@
 """
 Autonomous Constellation Manager (ACM)
-National Space Hackathon 2026 - IIT Delhi
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +11,7 @@ from app.api import telemetry, maneuver, simulation, visualization
 async def lifespan(app: FastAPI):
     init_db()
     print("[ACM] Database initialized. Ready on port 8000.")
-    yield
+    yieldp
 
 app = FastAPI(title="Autonomous Constellation Manager", version="1.0.0", lifespan=lifespan)
 
