@@ -1,0 +1,144 @@
+"""
+SQLite database — all tables defined here.
+"""
+from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+
+DATABASE_URL = "sqlite:///./acm.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+class ObjectState(Base):
+    """ECI state vector for every satellite and debris piece."""
+    __tablename__ = "object_states"
+    id           = Column(String, primary_key=True)
+    obj_type     = Column(String, nullable=False)       # SATELLITE | DEBRIS
+    timestamp    = Column(DateTime, nullable=False)
+    pos_x        = Column(Float, nullable=False)        # km ECI
+    pos_y        = Column(Float, nullable=False)
+    pos_z        = Column(Float, nullable=False)
+    vel_x        = Column(Float, nullable=False)        # km/s ECI
+    vel_y        = Column(Float, nullable=False)
+    vel_z        = Column(Float, nullable=False)
+    fuel_kg      = Column(Float, default=50.0)          # satellites only
+    mass_kg      = Column(Float, default=550.0)
+    status       = Column(String, default="NOMINAL")    # NOMINAL|EVADING|GRAVEYARD
+    slot_x       = Column(Float, nullable=True)         # nominal slot ECI
+    slot_y       = Column(Float, nullable=True)
+    slot_z       = Column(Float, nullable=True)
+    last_burn_time = Column(DateTime, nullable=True)
+
+
+class ManeuverRecord(Base):
+    """Scheduled and executed burn commands."""
+    __tablename__ = "maneuvers"
+    burn_id          = Column(String, primary_key=True)
+    satellite_id     = Column(String, nullable=False)
+    burn_time        = Column(DateTime, nullable=False)
+    dv_x             = Column(Float, nullable=False)    # km/s ECI
+    dv_y             = Column(Float, nullable=False)
+    dv_z             = Column(Float, nullable=False)
+    status           = Column(String, default="SCHEDULED")  # SCHEDULED|EXECUTED|FAILED
+    fuel_consumed_kg = Column(Float, nullable=True)
+    created_at       = Column(DateTime, default=datetime.utcnow)
+
+
+class CDMWarning(Base):
+    """Conjunction Data Message — predicted close approach."""
+    __tablename__ = "cdm_warnings"
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    satellite_id     = Column(String, nullable=False)
+    debris_id        = Column(String, nullable=False)
+    tca              = Column(DateTime, nullable=False)
+    miss_distance_km = Column(Float, nullable=False)
+    risk_level       = Column(String, default="WARNING")  # WARNING|CRITICAL|COLLISION
+    resolved         = Column(Integer, default=0)
+    created_at       = Column(DateTime, default=datetime.utcnow)
+
+
+class SimulationState(Base):
+    """Key-value store for global simulation parameters."""
+    __tablename__ = "simulation_state"
+    key   = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)
+
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        _seed_clock(db)
+        _seed_satellites(db)
+    finally:
+        db.close()
+
+
+def _seed_clock(db):
+    from app.core.sim_clock import CLOCK_KEY, DEFAULT_START
+    existing = db.query(SimulationState).filter_by(key=CLOCK_KEY).first()
+    if not existing:
+        db.add(SimulationState(key=CLOCK_KEY, value=DEFAULT_START))
+        db.commit()
+
+
+def _seed_satellites(db):
+    """Seed 10 demo satellites if DB is empty."""
+    import math
+    if db.query(ObjectState).filter_by(obj_type="SATELLITE").count() > 0:
+        return
+    satellites = []
+    for i in range(10):
+        angle = math.radians(i * 36)
+        r = 7000.0  # ~620 km altitude
+        vcirc = math.sqrt(398600.4418 / r)
+        sat = ObjectState(
+            id=f"SAT-Alpha-{i+1:02d}",
+            obj_type="SATELLITE",
+            timestamp=datetime(2026, 3, 12, 8, 0, 0),
+            pos_x=r * math.cos(angle),
+            pos_y=r * math.sin(angle),
+            pos_z=0.0,
+            vel_x=-vcirc * math.sin(angle),
+            vel_y= vcirc * math.cos(angle),
+            vel_z=0.0,
+            fuel_kg=50.0,
+            mass_kg=550.0,
+            status="NOMINAL",
+            slot_x=r * math.cos(angle),
+            slot_y=r * math.sin(angle),
+            slot_z=0.0,
+        )
+        satellites.append(sat)
+    db.add_all(satellites)
+    # Seed 50 debris objects
+    debris_list = []
+    for i in range(50):
+        angle = math.radians(i * 7.2 + 15)
+        r = 6900.0 + (i % 5) * 50
+        vcirc = math.sqrt(398600.4418 / r)
+        deb = ObjectState(
+            id=f"DEB-{90000+i}",
+            obj_type="DEBRIS",
+            timestamp=datetime(2026, 3, 12, 8, 0, 0),
+            pos_x=r * math.cos(angle),
+            pos_y=r * math.sin(angle),
+            pos_z=r * 0.05 * math.sin(angle * 2),
+            vel_x=-vcirc * math.sin(angle) * 1.01,
+            vel_y= vcirc * math.cos(angle) * 1.01,
+            vel_z=0.0,
+        )
+        debris_list.append(deb)
+    db.add_all(debris_list)
+    db.commit()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
